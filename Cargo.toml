@@ -1,0 +1,26 @@
+[package]
+authors = ["Austin Brown <austin@alumino.us>"]
+edition = "2018"
+name = "cacophony"
+version = "0.1.0"
+[dependencies]
+actix = "*"
+actix-web = "0.7.18"
+clap = "*"
+env_logger = "*"
+failure = "*"
+futures = "*"
+log = "*"
+rand = "0.6.5"
+serde = "*"
+serde_derive = "*"
+serde_yaml = "*"
+structopt = "*"
+sysinfo = "*"
+
+[dependencies.shiplift]
+git = "https://github.com/softprops/shiplift.git"
+
+[dependencies.uuid]
+features = ["v5"]
+version = "0.7.2"
