@@ -2,7 +2,7 @@
 
 use crate::executor::*;
 use crate::scheduler::*;
-use actix::System;
+use actix::SystemService;
 use actix_web::client::ClientRequestBuilder;
 use actix_web::dev::HttpResponseBuilder;
 use actix_web::middleware::{Logger, Middleware, Started};
@@ -33,9 +33,7 @@ fn register_node(
     peer_addr.set_port(remote_port.0);
 
     let node = Node::new(node_id.to_string(), peer_addr);
-    System::current()
-        .registry()
-        .get::<Scheduler>()
+    Scheduler::from_registry()
         .send(SchedulerCommand::RegisterNode(node))
         .from_err()
         .and_then(|_| Ok(HttpResponse::Ok().into()))
@@ -47,9 +45,7 @@ fn put_job(job_id: Path<String>, raw_spec: String) -> FutureResponse<HttpRespons
     done(serde_yaml::from_str(&raw_spec))
         .map_err(|e| format_err!("Invalid job spec: {:?}", e))
         .and_then(move |spec| {
-            System::current()
-                .registry()
-                .get::<Scheduler>()
+            Scheduler::from_registry()
                 .send(SchedulerCommand::CreateJob(job_id.to_string(), spec))
                 .from_err()
         })
@@ -64,9 +60,7 @@ fn put_service(
     scale: Json<ServiceConfig>,
 ) -> FutureResponse<HttpResponse> {
     let (job_id, service_name) = path.into_inner();
-    System::current()
-        .registry()
-        .get::<Scheduler>()
+    Scheduler::from_registry()
         .send(SchedulerCommand::UpdateService(
             job_id,
             service_name,
@@ -79,9 +73,7 @@ fn put_service(
 
 /// List submitted jobs
 fn job_list(_req: &HttpRequest<APIConfig>) -> impl Responder {
-    System::current()
-        .registry()
-        .get::<Scheduler>()
+    Scheduler::from_registry()
         .send(ListJobs)
         .map_err(Error::from)
         .and_then(|res| res)
@@ -91,9 +83,7 @@ fn job_list(_req: &HttpRequest<APIConfig>) -> impl Responder {
 
 /// Delete a job
 fn job_destroy(job_id: Path<String>) -> FutureResponse<HttpResponse> {
-    System::current()
-        .registry()
-        .get::<Scheduler>()
+    Scheduler::from_registry()
         .send(SchedulerCommand::DeleteJob(job_id.into_inner()))
         .from_err()
         .map(|_| HttpResponse::Ok().into())
@@ -102,9 +92,7 @@ fn job_destroy(job_id: Path<String>) -> FutureResponse<HttpResponse> {
 
 /// Called on nodes by the master node to send a new desired state
 fn state_update(state: Json<ClusterState>) -> FutureResponse<HttpResponse> {
-    System::current()
-        .registry()
-        .get::<Executor>()
+    Executor::from_registry()
         .send(ExecutorCommand::UpdateState(state.0))
         .from_err()
         .map(|_| HttpResponse::Ok().into())
@@ -113,9 +101,7 @@ fn state_update(state: Json<ClusterState>) -> FutureResponse<HttpResponse> {
 
 /// List the resource usage on the current node
 fn local_resources(_req: HttpRequest<APIConfig>) -> FutureResponse<HttpResponse> {
-    System::current()
-        .registry()
-        .get::<Executor>()
+    Executor::from_registry()
         .send(GetNodeResources)
         .from_err()
         .and_then(|res| res)
@@ -126,9 +112,7 @@ fn local_resources(_req: HttpRequest<APIConfig>) -> FutureResponse<HttpResponse>
 
 /// List the resource usage of all nodes in the cluster
 fn cluster_resources(_req: HttpRequest<APIConfig>) -> FutureResponse<HttpResponse> {
-    System::current()
-        .registry()
-        .get::<Scheduler>()
+    Scheduler::from_registry()
         .send(GetClusterResources)
         .from_err()
         .and_then(|res| res)
@@ -149,49 +133,53 @@ struct ForwardToMaster;
 impl Middleware<APIConfig> for ForwardToMaster {
     fn start(&self, req: &HttpRequest<APIConfig>) -> actix_web::Result<Started> {
         let req = req.clone();
-        Ok(Started::Future(
-            Box::new(
-                System::current()
-                    .registry()
-                    .get::<Executor>()
-                    .send(GetRemoteMaster)
-                    .from_err()
-                    .and_then(
-                        move |master| -> Box<
-                            Future<Item = Option<HttpResponse>, Error = actix_web::Error>,
-                        > {
-                            match master {
-                                Ok(Some(master)) => {
-                                    let uri_on_master = format!(
-                                        "http://{}{}{}",
-                                        master,
-                                        req.path(),
-                                        req.query_string()
-                                    );
+        Ok(
+            Started::Future(
+                Box::new(
+                    Executor::from_registry()
+                        .send(GetRemoteMaster)
+                        .from_err()
+                        .and_then(
+                            move |master| -> Box<
+                                Future<Item = Option<HttpResponse>, Error = actix_web::Error>,
+                            > {
+                                match master {
+                                    Ok(Some(master)) => {
+                                        let uri_on_master = format!(
+                                            "http://{}{}{}",
+                                            master,
+                                            req.path(),
+                                            req.query_string()
+                                        );
 
-                                    info!("Proxying request to master: {}", uri_on_master);
-                                    Box::new(
-                                        ClientRequestBuilder::from(&req)
-                                            .uri(uri_on_master)
-                                            .streaming(req.payload())
-                                            .unwrap()
-                                            .send()
-                                            .from_err()
-                                            .and_then(|res| {
-                                                Ok(Some(HttpResponseBuilder::from(&res).finish()))
-                                            }),
-                                    )
+                                        info!("Proxying request to master: {}", uri_on_master);
+                                        Box::new(
+                                            ClientRequestBuilder::from(&req)
+                                                .uri(uri_on_master)
+                                                .streaming(req.payload())
+                                                .unwrap()
+                                                .send()
+                                                .from_err()
+                                                .and_then(|res| {
+                                                    Ok(Some(
+                                                        HttpResponseBuilder::from(&res).finish(),
+                                                    ))
+                                                }),
+                                        )
+                                    }
+                                    Ok(None) => Box::new(ok(None)),
+                                    Err(e) => {
+                                        error!("Cannot service cluster request: {:?}", e);
+                                        Box::new(ok(Some(
+                                            HttpResponse::ServiceUnavailable().finish(),
+                                        )))
+                                    }
                                 }
-                                Ok(None) => Box::new(ok(None)),
-                                Err(e) => {
-                                    error!("Cannot service cluster request: {:?}", e);
-                                    Box::new(ok(Some(HttpResponse::ServiceUnavailable().finish())))
-                                }
-                            }
-                        },
-                    ),
+                            },
+                        ),
+                ),
             ),
-        ))
+        )
     }
 }
 

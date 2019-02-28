@@ -5,13 +5,18 @@ use crate::executor::*;
 use actix::fut::wrap_future;
 use actix::prelude::*;
 use actix::registry::SystemService;
+use actix::spawn;
 use actix_web::{client, HttpMessage};
 use failure::{err_msg, Error};
 use futures::future::{join_all, Future};
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
+use serde_json;
+use shiplift::builder::{ContainerOptions, ContainerOptionsBuilder};
 use std::collections::HashMap;
+use std::fs;
 use std::net::{SocketAddr, ToSocketAddrs};
+use std::path::PathBuf;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -32,6 +37,8 @@ pub struct JobSpec {
 #[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
 pub struct ServiceSpec {
     pub image: String,
+    pub command: Option<String>,
+    pub entrypoint: Option<String>,
 
     #[serde(default)]
     pub ports: Vec<String>,
@@ -41,6 +48,34 @@ pub struct ServiceSpec {
 
     #[serde(default)]
     pub environment: Vec<String>,
+}
+
+impl ServiceSpec {
+    /// Create ContainerOptions based on this service spec
+    pub fn build_container_options(&self) -> Result<ContainerOptionsBuilder, Error> {
+        let mut opt = ContainerOptions::builder(&*self.image);
+        opt.volumes(self.volumes.iter().map(|i| &**i).collect())
+            .env(self.environment.iter().map(|i| &**i).collect());
+
+        if let Some(cmd) = &self.command {
+            opt.cmd(vec![&*cmd]);
+        }
+
+        if let Some(entrypoint) = &self.entrypoint {
+            opt.entrypoint(entrypoint);
+        }
+
+        for port in &self.ports {
+            let mut port = port.split(':');
+            opt.expose(
+                port.next().unwrap().parse()?,
+                "tcp",
+                port.next().unwrap().parse()?,
+            );
+        }
+
+        Ok(opt)
+    }
 }
 
 /// Describes the state of the cluster including all jobs and nodes.
@@ -103,6 +138,7 @@ impl Node {
 pub struct Scheduler {
     state: ClusterState,
     node_resources: HashMap<NodeId, NodeResources>,
+    state_path: Option<PathBuf>,
 }
 
 impl Scheduler {
@@ -116,10 +152,7 @@ impl Scheduler {
         self.state.master_node = Some(node.node_id.clone());
         self.state.nodes.insert(node.node_id.clone(), node);
 
-        System::current()
-            .registry()
-            .get::<Executor>()
-            .do_send(ExecutorCommand::UpdateState(self.state.clone()));
+        Executor::from_registry().do_send(ExecutorCommand::UpdateState(self.state.clone()));
 
         Ok(())
     }
@@ -195,7 +228,8 @@ impl Scheduler {
                 .insert(alloc.allocation_id.clone(), alloc);
         }
 
-        Arbiter::spawn(
+        self.save_state();
+        spawn(
             self.update_nodes()
                 .then(|res| check_err("Update nodes", res)),
         );
@@ -218,6 +252,28 @@ impl Scheduler {
         join_all(update_fut)
             .from_err()
             .map(|results| info!("Sent updated state to {} node(s)", results.len()))
+    }
+
+    fn load_state(&mut self) -> Result<(), Error> {
+        if let Some(path) = &self.state_path {
+            info!("Loading state from: {:?}", path);
+            let raw_state = fs::File::open(path)?;
+            self.state = serde_json::from_reader(raw_state)?;
+            self.update_schedule();
+        }
+        Ok(())
+    }
+
+    fn save_state(&mut self) {
+        if let Some(path) = &self.state_path {
+            match serde_json::to_string(&self.state) {
+                Ok(serialized) => match fs::write(path, serialized) {
+                    Ok(_) => {}
+                    Err(e) => error!("Failed to write state: {:?}", e),
+                },
+                Err(e) => error!("Failed to serialize state: {:?}", e),
+            }
+        }
     }
 }
 
@@ -243,6 +299,7 @@ impl Supervised for Scheduler {}
 
 impl SystemService for Scheduler {}
 
+/// Fire-and-forget type commands for the scheduler
 #[derive(Clone, Debug)]
 pub enum SchedulerCommand {
     CreateJob(JobId, JobSpec),
@@ -252,6 +309,8 @@ pub enum SchedulerCommand {
 
     BootstrapNode(Node),
     RegisterNode(Node),
+
+    SetStatePath(PathBuf),
 }
 
 impl Message for SchedulerCommand {
@@ -293,16 +352,23 @@ impl Handler<SchedulerCommand> for Scheduler {
             SchedulerCommand::BootstrapNode(node) => self.bootstrap(node),
             SchedulerCommand::RegisterNode(node) => {
                 self.state.nodes.insert(node.node_id.clone(), node);
-                Arbiter::spawn(
+                spawn(
                     self.update_nodes()
                         .map_err(|e| error!("Failed to update new node: {}", e)),
                 );
                 Ok(())
             }
+            SchedulerCommand::SetStatePath(path) => {
+                dbg!(path.canonicalize().map_err(Error::from).and_then(|path| {
+                    self.state_path = Some(path);
+                    self.load_state()
+                }))
+            }
         }
     }
 }
 
+/// Message type for requesting resource usage of all nodes
 pub struct GetClusterResources;
 
 impl Message for GetClusterResources {
@@ -337,6 +403,7 @@ impl Handler<GetClusterResources> for Scheduler {
     }
 }
 
+/// Message type for requesting the current list of jobs
 pub struct ListJobs;
 
 impl Message for ListJobs {
@@ -348,5 +415,30 @@ impl Handler<ListJobs> for Scheduler {
 
     fn handle(&mut self, _: ListJobs, _: &mut Context<Self>) -> Self::Result {
         Ok(self.state.jobs.clone())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::scheduler::*;
+    use crate::test_support::*;
+    use serde_yaml;
+
+    #[test]
+    fn test_create_job() {
+        let job: JobSpec =
+            serde_yaml::from_str(TEST_JOB_SPEC).expect("Failed to parse sample job spec");
+
+        with_bootstrap_node(|| {
+            Scheduler::from_registry()
+                .send(SchedulerCommand::CreateJob(String::from("test-job"), job))
+                .and_then(move |res| {
+                    assert!(res.is_ok());
+                    Scheduler::from_registry().send(ListJobs)
+                })
+                .map(|res| {
+                    assert_eq!(res.expect("List jobs failed").len(), 1);
+                })
+        });
     }
 }

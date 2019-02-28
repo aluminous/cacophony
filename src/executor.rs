@@ -26,6 +26,14 @@ use sysinfo::{ProcessorExt, SystemExt};
 const LABEL_NODE_ID: &str = "com.aluminous.cacophony.node-id";
 const LABEL_ALLOCATION_ID: &str = "com.aluminous.cacophony.allocation-id";
 
+/// Details about the current resource usage of a node
+#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
+pub struct NodeResources {
+    pub total_memory: u64,
+    pub used_memory: u64,
+    pub cpu_usage: Vec<f32>,
+}
+
 /// Updates the local state (running containers) to match the cluster state.
 #[derive(Default)]
 pub struct Executor {
@@ -150,7 +158,9 @@ impl Executor {
         labels.insert(LABEL_NODE_ID, &self.node_id);
 
         let pull_opts = PullOptions::builder().image(&*image).build();
-        let create_opts = ContainerOptions::builder(&*image)
+        let create_opts = service
+            .build_container_options()
+            .unwrap()
             .labels(&labels)
             .auto_remove(true)
             .build();
@@ -179,6 +189,7 @@ impl Supervised for Executor {}
 
 impl SystemService for Executor {}
 
+/// Fire-and-forget command messages for Executor
 #[derive(Clone, Debug)]
 pub enum ExecutorCommand {
     UpdateState(ClusterState),
@@ -215,6 +226,7 @@ impl Handler<ExecutorCommand> for Executor {
     }
 }
 
+/// Get the address of the master node (if this node is not master)
 pub struct GetRemoteMaster;
 
 impl Message for GetRemoteMaster {
@@ -238,13 +250,7 @@ impl Handler<GetRemoteMaster> for Executor {
     }
 }
 
-#[derive(Debug, PartialEq, Serialize, Deserialize, Clone)]
-pub struct NodeResources {
-    pub total_memory: u64,
-    pub used_memory: u64,
-    pub cpu_usage: Vec<f32>,
-}
-
+/// Message requesting resource usage of the local node
 pub struct GetNodeResources;
 
 impl Message for GetNodeResources {
@@ -279,4 +285,24 @@ where
     };
 
     ok(())
+}
+
+#[cfg(test)]
+mod test {
+    use crate::executor::*;
+    use crate::test_support::*;
+
+    #[test]
+    fn test_node_resources() {
+        with_node("127.0.0.1:9001", || {
+            Executor::from_registry()
+                .send(GetNodeResources)
+                .and_then(|res| {
+                    let resources = res.expect("Get resources failed");
+                    assert!(resources.total_memory - resources.used_memory > 0);
+                    assert!(resources.cpu_usage.len() > 0);
+                    Ok(())
+                })
+        });
+    }
 }

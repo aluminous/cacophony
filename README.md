@@ -41,6 +41,14 @@ curl -v -X PUT -H 'Content-Type: application/json' \
 curl -v -X DELETE 10.0.0.1:9000/cluster/job/my-job-id
 ```
 
+## Client-facing API
+
+* `GET /cluster/job` - List jobs
+* `PUT /cluster/job/:job_id` - Create / update a job with user-specified ID
+* `PUT /cluster/job/:job_id/:service_name` - Set scaling for a service (scale to 0 to stop). e.g. `{"scale": 0}`
+* `DELETE /cluster/job/:job_id` - Delete a job
+* `GET /cluster/resources` - List resource usage of all nodes
+
 ## Architecture
 
 The service consists of 3 components:
