@@ -81,6 +81,16 @@ fn job_list(_req: &HttpRequest<APIConfig>) -> impl Responder {
         .responder()
 }
 
+/// List scheduled allocations
+fn allocation_list(_req: &HttpRequest<APIConfig>) -> impl Responder {
+    Scheduler::from_registry()
+        .send(ListAllocations)
+        .map_err(Error::from)
+        .and_then(|res| res)
+        .map(|res| HttpResponse::Ok().json(res))
+        .responder()
+}
+
 /// Delete a job
 fn job_destroy(job_id: Path<String>) -> FutureResponse<HttpResponse> {
     Scheduler::from_registry()
@@ -197,9 +207,10 @@ pub fn create_api(config: APIConfig) {
                         r.put().with_async(put_job);
                         r.delete().with_async(job_destroy);
                     })
-                    .resource("/job/{job_id}/{service_name}", |r| {
+                    .resource("/job/{job_id}/service/{service_name}", |r| {
                         r.put().with_async(put_service);
                     })
+                    .resource("/allocation", |r| r.get().f(allocation_list))
                     .resource("/node/{node_id}", |r| r.post().with_async(register_node))
                     .resource("/resources", |r| r.get().with_async(cluster_resources))
             })

@@ -422,6 +422,21 @@ impl Handler<ListJobs> for Scheduler {
     }
 }
 
+/// Messsage requesting a list of allocations
+pub struct ListAllocations;
+
+impl Message for ListAllocations {
+    type Result = Result<Vec<Allocation>, Error>;
+}
+
+impl Handler<ListAllocations> for Scheduler {
+    type Result = Result<Vec<Allocation>, Error>;
+
+    fn handle(&mut self, _: ListAllocations, _: &mut Context<Self>) -> Self::Result {
+        Ok(self.state.allocations.values().cloned().collect())
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::scheduler::*;

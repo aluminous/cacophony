@@ -22,7 +22,7 @@ Create a new cluster:
 cargo run -- --bind-addr 10.0.0.1:9000 bootstrap
 ```
 
-Add more nodes:
+Add more nodes (from another machine):
 ```bash
 # Provide the IP/port of any existing node.
 cargo run -- join 10.0.0.1:9000
@@ -36,19 +36,29 @@ curl -v -X PUT -H 'Content-Type: application/json' \
 
 # Scale it
 curl -v -X PUT -H 'Content-Type: application/json' \
-    10.0.0.1:9000/cluster/job/my-job-id/example-service --data '{"scale": 5}'
+    10.0.0.1:9000/cluster/job/my-job-id/service/example-service --data '{"scale": 5}'
 
 # Delete it
 curl -v -X DELETE 10.0.0.1:9000/cluster/job/my-job-id
+```
+
+## Installation
+
+Build the project and copy the binary to each host:
+
+```
+# The compiled binary is saved in `target/release/cacophony`
+cargo build --release
 ```
 
 ## Client-facing API
 
 * `GET /cluster/job` - List jobs
 * `PUT /cluster/job/:job_id` - Create / update a job with user-specified ID
-* `PUT /cluster/job/:job_id/:service_name` - Set scaling for a service (scale to 0 to stop). e.g. `{"scale": 0}`
+* `PUT /cluster/job/:job_id/service/:service_name` - Set scaling for a service (scale to 0 to stop). e.g. `{"scale": 0}`
 * `DELETE /cluster/job/:job_id` - Delete a job
 * `GET /cluster/resources` - List resource usage of all nodes
+* `GET /cluster/allocation` - List allocations (scheduled containers)
 
 ## Architecture
 
