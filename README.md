@@ -1,14 +1,15 @@
 # Cacophony
 
-Simple container scheduler in Rust.
+A simple distributed container scheduler in Rust.
 
 Features include:
+* REST API to create, edit, scale and delete jobs/services
 * Ability to issue API requests to any node
-* Prefers nodes with free memory when scheduling, avoids non-responsive nodes
+* Scheduling weighted according to available resources on each node
 
 Non-features / areas for improvement:
-* High availability via leader-election / failover.
-* Ability to detect failed nodes and reschedule.
+* High availability via leader-election / failover
+* Ability to detect failed nodes and reschedule
 * Service discovery mechanism
 
 ## Basic Usage
