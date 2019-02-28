@@ -195,14 +195,13 @@ impl Scheduler {
 
                 if diff > 0 {
                     // Create new allocations
-                    for _ in node_index
+                    for node in node_index
                         .sample_iter(&mut thread_rng())
                         .take(diff as usize)
                     {
                         to_add.push(Allocation {
                             allocation_id: Uuid::new_v4().to_hyphenated().to_string(),
-                            //TODO: Intelligent node selection (RR or weighted random)
-                            node_id: self.state.nodes.keys().next().unwrap().clone(),
+                            node_id: nodes[node].clone(),
                             job_id: job_id.clone(),
                             service_name: service_name.clone(),
                         });
