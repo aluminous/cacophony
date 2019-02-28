@@ -13,7 +13,7 @@ use actix::prelude::*;
 use actix::registry::SystemService;
 use actix_web::client;
 use failure::{err_msg, Error};
-use futures::future::{join_all, ok, Future};
+use futures::future::{err, join_all, ok, Future};
 use futures::stream::Stream;
 use shiplift::builder::*;
 use shiplift::Docker;
@@ -114,6 +114,7 @@ impl Executor {
                             .containers()
                             .get(&container.id)
                             .remove(RmContainerOptions::builder().force(true).build())
+                            .from_err()
                     })
                     .collect();
 
@@ -140,13 +141,21 @@ impl Executor {
     }
 
     /// Create and start a container for an allocation. Pulls the image if needed.
-    fn create_container(
-        &self,
-        alloc: &Allocation,
-    ) -> impl Future<Item = (), Error = shiplift::Error> {
+    fn create_container(&self, alloc: &Allocation) -> Box<Future<Item = (), Error = Error>> {
         let docker = Docker::new();
 
-        let service = &self.state.jobs[&alloc.job_id].services[&alloc.service_name];
+        let job_services = &self.state.jobs.get(&alloc.job_id);
+        let service = match job_services.and_then(|j| j.services.get(&alloc.service_name)) {
+            Some(service) => service,
+            None => {
+                return Box::new(err(format_err!(
+                    "Service '{}' '{}' allocated but not defined",
+                    alloc.job_id,
+                    alloc.service_name
+                )));
+            }
+        };
+
         let image = if service.image.contains(':') {
             service.image.clone()
         } else {
@@ -165,19 +174,22 @@ impl Executor {
             .auto_remove(true)
             .build();
 
-        docker
-            .images()
-            .get(&image)
-            .inspect()
-            .map(move |_| info!("Image already pulled: {:?}", image))
-            .or_else(move |_| {
-                docker.images().pull(&pull_opts).for_each(|p| {
-                    debug!("Pull: {:?}", p);
-                    Ok(())
+        Box::new(
+            docker
+                .images()
+                .get(&image)
+                .inspect()
+                .map(move |_| info!("Image already pulled: {:?}", image))
+                .or_else(move |_| {
+                    docker.images().pull(&pull_opts).for_each(|p| {
+                        debug!("Pull: {:?}", p);
+                        Ok(())
+                    })
                 })
-            })
-            .and_then(move |_| Docker::new().containers().create(&create_opts))
-            .and_then(|res| Docker::new().containers().get(&*res.id).start())
+                .and_then(move |_| Docker::new().containers().create(&create_opts))
+                .and_then(|res| Docker::new().containers().get(&*res.id).start())
+                .from_err(),
+        )
     }
 }
 
@@ -300,7 +312,7 @@ mod test {
                 .and_then(|res| {
                     let resources = res.expect("Get resources failed");
                     assert!(resources.total_memory - resources.used_memory > 0);
-                    assert!(resources.cpu_usage.len() > 0);
+                    assert!(!resources.cpu_usage.is_empty());
                     Ok(())
                 })
         });

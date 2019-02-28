@@ -266,6 +266,7 @@ impl Scheduler {
 
     fn save_state(&mut self) {
         if let Some(path) = &self.state_path {
+            info!("Saving state to: {:?}", path);
             match serde_json::to_string(&self.state) {
                 Ok(serialized) => match fs::write(path, serialized) {
                     Ok(_) => {}
@@ -336,12 +337,18 @@ impl Handler<SchedulerCommand> for Scheduler {
                 Ok(())
             }
             SchedulerCommand::UpdateService(job_id, service_name, service_config) => {
-                self.state
+                let result = self
+                    .state
                     .services
                     .get_mut(&job_id)
-                    .and_then(|services| services.insert(service_name, service_config));
+                    .and_then(|services| services.get_mut(&service_name))
+                    .map(|service| {
+                        *service = service_config;
+                        {}
+                    })
+                    .ok_or_else(|| err_msg("Error does not exist"));
                 self.update_schedule();
-                Ok(())
+                result
             }
             SchedulerCommand::DeleteJob(job_id) => {
                 self.state.jobs.remove(&job_id);
@@ -359,10 +366,8 @@ impl Handler<SchedulerCommand> for Scheduler {
                 Ok(())
             }
             SchedulerCommand::SetStatePath(path) => {
-                dbg!(path.canonicalize().map_err(Error::from).and_then(|path| {
-                    self.state_path = Some(path);
-                    self.load_state()
-                }))
+                self.state_path = Some(path);
+                self.load_state()
             }
         }
     }

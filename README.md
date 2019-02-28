@@ -31,7 +31,7 @@ Manage jobs:
 ```bash
 # Start a job
 curl -v -X PUT -H 'Content-Type: application/json' \
-    10.0.0.1:9000/cluster/job/my-job-id --data-binary @examples/simple-job.yml
+    10.0.0.1:9000/cluster/job/my-job-id --data-binary @examples/example-job.yml
 
 # Scale it
 curl -v -X PUT -H 'Content-Type: application/json' \
