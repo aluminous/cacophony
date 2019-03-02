@@ -67,11 +67,9 @@ impl ServiceSpec {
 
         for port in &self.ports {
             let mut port = port.split(':');
-            opt.expose(
-                port.next().unwrap().parse()?,
-                "tcp",
-                port.next().unwrap().parse()?,
-            );
+            let host_port = port.next().unwrap().parse()?;
+            let container_port = port.next().unwrap().parse()?;
+            opt.expose(container_port, "tcp", host_port);
         }
 
         Ok(opt)
@@ -395,14 +393,17 @@ impl Handler<GetClusterResources> for Scheduler {
                     .send()
                     .map_err(Error::from)
                     .and_then(|res| res.json().from_err())
-                    .map(move |res| (node_id, res))
+                    .then(move |res| {
+                        Ok::<_, Error>(match res {
+                            Ok(ok) => Some((node_id, ok)),
+                            Err(_) => None,
+                        })
+                    })
             })
             .collect();
 
         Box::new(
-            join_all(node_queries)
-                .map(|mut res| res.drain(..).collect())
-                .from_err(),
+            join_all(node_queries).map(|mut res| res.drain(..).filter_map(|res| res).collect()),
         )
     }
 }

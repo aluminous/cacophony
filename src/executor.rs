@@ -171,7 +171,7 @@ impl Executor {
             .build_container_options()
             .unwrap()
             .labels(&labels)
-            .auto_remove(true)
+            .restart_policy("on-failure", 4)
             .build();
 
         Box::new(
